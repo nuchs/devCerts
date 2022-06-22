@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# -----------------------------------------------------------------------------
+# Config
+# -----------------------------------------------------------------------------
+
+root="root_ca"
+int="int_ca"
+
+# -----------------------------------------------------------------------------
+# Script
+# -----------------------------------------------------------------------------
+
+echo "Hello, it's cert generating time!"
+source ./lib/passwords
+source ./lib/certFunctions
+
+# Create CA's
+CreateRootCa $root $PASS_ROOTCA
+CreateIntermediateCa $int $PASS_INTCA
+
+# Create certs for services
+# The first argument is the CA you would like to issue the cert
+# The second argument sets the name of the files created
+# The third argument is the password for the generated private key and pfx
+# files
+CreateServerCert $int server1 $PASS_SERVER1
+# ...etc
+
+# Create certs for clients
+# Arguments are the same as for creating server certs
+CreateClientCert $int client1 $PASS_CLIENT1
+# ...etc
+
+echo "All done, bye bye"

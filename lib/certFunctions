@@ -1,0 +1,124 @@
+#!/bin/bash
+echo "Loading certificate functions"
+
+# -----------------------------------------------------------------------------
+# Config
+# -----------------------------------------------------------------------------
+
+rootCert="v3_ca "
+intermediateCert="v3_intermediate_ca "
+serverCert="server_cert "
+clientCert="usr_cert "
+
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+
+function MakeCaDirectory {
+  echo "---------- Creating directory for $1"
+  mkdir $1
+  cp $2 $1/openssl.cnf
+  cd $1
+  mkdir certs crl newcerts private csr
+  chmod 700 private
+  touch index.txt
+  echo 1000 > serial
+  echo 1000 > crlnumber
+  cd ..
+}
+
+function SelfSignRoot {
+  cd $1
+  echo "---------- Self sign root cert"
+  read -p "CN = ? " cn
+  openssl req \
+    -config openssl.cnf \
+    -key private/$1.key.pem -passin pass:$2 \
+    -out certs/$1.cert.pem \
+    -new -x509 -days 7300 -sha256 -extensions $rootCert \
+    -subj "/CN=$cn/C=GB/ST=England/O=Smilies"
+  chmod 444 certs/$1.cert.pem
+  cd ..
+}
+
+function GeneratePrivateKey {
+  cd $1
+  echo "---------- Create private key for $2 in $1"
+  openssl genrsa -aes256 -out private/$2.key.pem -passout pass:$3 4096
+  cd ..
+}
+
+function GenerateCsr {
+  cd $1
+  echo "---------- Submitting csr for $2 to $1"
+  read -p "CN = ? " cn
+  openssl req \
+    -config openssl.cnf \
+    -key private/$2.key.pem -passin pass:$3 \
+    -out csr/$2.csr.pem \
+    -new -sha256 -subj "/CN=$cn/C=GB/ST=England/O=Smilies"
+  cd ..
+}
+
+function SignCsr {
+  cd $1
+  echo "---------- $1 is signing csr for $2"
+  openssl ca \
+    -config openssl.cnf \
+    -keyfile private/$1.key.pem -passin pass:$3 \
+    -in ../$2/csr/$2.csr.pem \
+    -out ../$2/certs/$2.cert.pem \
+    -extensions $4 -days $5 -notext -md sha256
+  chmod 444 ../$2/certs/$2.cert.pem
+  cd ..
+}
+
+function PackCerts {
+  cd $1
+  echo "---------- $1 is creating pfx for $2"
+  openssl pkcs12 -export \
+    -in certs/$1.cert.pem -inkey private/$1.key.pem -passin pass:$3 \
+    -out certs/$1.pfx -passout pass:$3
+  cd ..
+}
+
+function BuildChain {
+  echo "---------- Built chain cert: $1 -> $2"
+  cat $2/certs/$2.cert.pem $1/certs/$1.cert.pem > $2/certs/chain.cert.pem
+  chmod 444 $2/certs/chain.cert.pem
+}
+
+function CreateRootCa {
+  echo "----- Creating root CA $1"
+  MakeCaDirectory $1 "lib/$1.openssl.cnf"
+  GeneratePrivateKey $1 $1 $2
+  SelfSignRoot $1 $2
+  echo "----- Done for $1"
+}
+
+function CreateIntermediateCa {
+  echo "----- $1 is approving intermediate CA $2"
+  MakeCaDirectory $2 "lib/$2.openssl.cnf"
+  GeneratePrivateKey $2 $2 $3
+  GenerateCsr $2 $2 $3 
+  SignCsr $1 $2 $3 $intermediateCert 3650
+  BuildChain $1 $2
+  echo "----- Done for $2"
+}
+
+function CreateServerCert {
+  echo "----- $1 is approving server cert for $2"
+  GeneratePrivateKey $1 $2 $3
+  GenerateCsr $1 $2 $3 
+  SignCsr $1 $2 $3 $serverCert 365
+  echo "----- Done for $2"
+}
+
+function CreateClientCert {
+  echo "----- $1 is approving client cert for $2"
+  GeneratePrivateKey $1 $2 $3
+  GenerateCsr $1 $2 $3 
+  SignCsr $1 $2 $3 $clientCert 365
+  echo "----- Done for $2"
+}
+
