@@ -14,7 +14,7 @@ clientCert="usr_cert "
 # Helper Functions
 # -----------------------------------------------------------------------------
 
-function MakeCaDirectory {
+function __MakeCaDirectory {
   echo "---------- Creating directory for $1"
   mkdir $1
   cp $2 $1/openssl.cnf
@@ -27,98 +27,125 @@ function MakeCaDirectory {
   cd ..
 }
 
-function SelfSignRoot {
+function __SelfSignRoot {
   cd $1
   echo "---------- Self sign root cert"
   read -p "CN = ? " cn
+  read -p "OU = ? " ou
+
+  if [ -z "$ou" ]
+  then
+    ou="Smilies"
+  fi
+
   openssl req \
     -config openssl.cnf \
     -key private/$1.key.pem -passin pass:$2 \
     -out certs/$1.cert.pem \
     -new -x509 -days 7300 -sha256 -extensions $rootCert \
-    -subj "/CN=$cn/C=GB/ST=England/O=Smilies"
+    -subj "/CN=$cn/C=GB/ST=England/O=$ou"
   chmod 444 certs/$1.cert.pem
   cd ..
 }
 
-function GeneratePrivateKey {
+function __GeneratePrivateKey {
   cd $1
   echo "---------- Create private key for $2 in $1"
   openssl genrsa -aes256 -out private/$2.key.pem -passout pass:$3 4096
   cd ..
 }
 
-function GenerateCsr {
+function __GenerateCsr {
   cd $1
   echo "---------- Submitting csr for $2 to $1"
   read -p "CN = ? " cn
+  read -p "OU = ? " ou
+
+  if [ -z "$ou" ]
+  then
+    ou="Smilies"
+  fi
+
   openssl req \
     -config openssl.cnf \
     -key private/$2.key.pem -passin pass:$3 \
     -out csr/$2.csr.pem \
-    -new -sha256 -subj "/CN=$cn/C=GB/ST=England/O=Smilies"
+    -new -sha256 -subj "/CN=$cn/C=GB/ST=England/O=$ou"
   cd ..
 }
 
-function SignCsr {
+function __SignCsr {
   cd $1
   echo "---------- $1 is signing csr for $2"
   openssl ca \
     -config openssl.cnf \
     -keyfile private/$1.key.pem -passin pass:$3 \
-    -in ../$2/csr/$2.csr.pem \
-    -out ../$2/certs/$2.cert.pem \
+    -in csr/$2.csr.pem \
+    -out newcerts/$2.cert.pem \
     -extensions $4 -days $5 -notext -md sha256
-  chmod 444 ../$2/certs/$2.cert.pem
+  chmod 444 newcerts/$2.cert.pem
   cd ..
 }
 
-function PackCerts {
+function __SignCaCsr {
+  mv $2/csr/$2.csr.pem $1/csr/
+  __SignCsr $1 $2 $3 $intermediateCert 3650
+  cp $1/newcerts/$2.cert.pem $2/certs/
+}
+
+function __PackCerts {
   cd $1
   echo "---------- $1 is creating pfx for $2"
   openssl pkcs12 -export \
-    -in certs/$1.cert.pem -inkey private/$1.key.pem -passin pass:$3 \
-    -out certs/$1.pfx -passout pass:$3
+    -in newcerts/$2.cert.pem -inkey private/$2.key.pem -passin pass:$3 \
+    -chain -CAfile certs/chain.cert.pem \
+    -out newcerts/$2.pfx -passout pass:$3
   cd ..
 }
 
-function BuildChain {
+function __BuildChain {
   echo "---------- Built chain cert: $1 -> $2"
   cat $2/certs/$2.cert.pem $1/certs/$1.cert.pem > $2/certs/chain.cert.pem
   chmod 444 $2/certs/chain.cert.pem
 }
 
 function CreateRootCa {
-  echo "----- Creating root CA $1"
-  MakeCaDirectory $1 "lib/$1.openssl.cnf"
-  GeneratePrivateKey $1 $1 $2
-  SelfSignRoot $1 $2
-  echo "----- Done for $1"
+  local name="$1" password="$2"
+  echo "----- Creating root CA $name"
+  __MakeCaDirectory $name "lib/$name.openssl.cnf"
+  __GeneratePrivateKey $name $name $password
+  __SelfSignRoot $name $password
+  echo "----- Done for $name"
 }
 
 function CreateIntermediateCa {
-  echo "----- $1 is approving intermediate CA $2"
-  MakeCaDirectory $2 "lib/$2.openssl.cnf"
-  GeneratePrivateKey $2 $2 $3
-  GenerateCsr $2 $2 $3 
-  SignCsr $1 $2 $3 $intermediateCert 3650
-  BuildChain $1 $2
-  echo "----- Done for $2"
+  local rootName="$1" intName="$2" rootPass="$3" intPass="$4"
+  echo "----- $rootName is approving intermediate CA $intName"
+  __MakeCaDirectory $intName "lib/$intName.openssl.cnf"
+  __GeneratePrivateKey $intName $intName $intPass
+  __GenerateCsr $intName $intName $intPass 
+  __SignCaCsr $rootName $intName $rootPass
+  __BuildChain $rootName $intName
+  echo "----- Done for $intName"
 }
 
 function CreateServerCert {
-  echo "----- $1 is approving server cert for $2"
-  GeneratePrivateKey $1 $2 $3
-  GenerateCsr $1 $2 $3 
-  SignCsr $1 $2 $3 $serverCert 365
-  echo "----- Done for $2"
+  local ca="$1" name="$2" caPass="$3" serverPass="$4"
+  echo "----- $ca is approving server cert for $name"
+  __GeneratePrivateKey $ca $name $serverPass
+  __GenerateCsr $ca $name $serverPass 
+  __SignCsr $ca $name $caPass $serverCert 365
+  __PackCerts $ca $name $serverPass
+  echo "----- Done for $name"
 }
 
 function CreateClientCert {
-  echo "----- $1 is approving client cert for $2"
-  GeneratePrivateKey $1 $2 $3
-  GenerateCsr $1 $2 $3 
-  SignCsr $1 $2 $3 $clientCert 365
-  echo "----- Done for $2"
+  local ca="$1" name="$2" caPass="$3" clientPass="$4"
+  echo "----- $ca is approving client cert for $name"
+  __GeneratePrivateKey $ca $name $clientPass
+  __GenerateCsr $ca $name $clientPass 
+  __SignCsr $ca $name $caPass $clientCert 365
+  __PackCerts $ca $name $clientPass
+  echo "----- Done for $name"
 }
 
